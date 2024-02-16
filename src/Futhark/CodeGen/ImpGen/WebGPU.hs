@@ -7,6 +7,7 @@ where
 
 import Control.Monad.State
 import Data.Bifunctor (second)
+import Data.Either (rights)
 import Data.Map qualified as M
 import Data.Set qualified as S
 import Data.Text qualified as T
@@ -276,14 +277,26 @@ genMemoryDecls kernel = zipWith memDecl [1..] uses
       WGSL.VarDecl (WGSL.bindingAttribs 0 i) (WGSL.Storage WGSL.ReadWrite)
                    (nameToIdent name) (WGSL.Array $ primWGSLType typ)
 
+-- | Find all named 'KernelConst's used in the kernel either as block size or as
+-- part of a 'KernelConstExp' in a 'ConstUse'. We will generate `override`
+-- declarations for all of them.
+-- TODO: This does not handle 'SizeMaxConst' 'KernelConst's yet.
+kernelConsts :: ImpGPU.Kernel -> S.Set (ImpGPU.KernelConst, PrimType)
+kernelConsts kernel = S.union blockSizeConsts constUses
+  where
+    blockSizeConsts = S.fromList $
+      map (, IntType Int32) (rights $ ImpGPU.kernelBlockSize kernel)
+    constUseExps = [ e | ImpGPU.ConstUse _ e <- ImpGPU.kernelUses kernel] 
+    constUses = foldl S.union S.empty $ map leafExpTypes constUseExps
+
 -- | Generate `override` declarations for kernel 'ConstUse's and
 -- backend-provided values (like block size and lockstep width).
 genConstAndBuiltinDecls :: ImpGPU.Kernel -> [WGSL.Declaration]
 genConstAndBuiltinDecls kernel = constDecls ++ builtinDecls
   where 
-    constDecls = do
-      ImpGPU.ConstUse name _ <- ImpGPU.kernelUses kernel
-      pure $ WGSL.OverrideDecl (nameToIdent name) (WGSL.Prim WGSL.Int32)
+    constDecls =
+      [ WGSL.OverrideDecl (nameToIdent name) (WGSL.Prim WGSL.Int32) |
+        ImpGPU.ConstUse name _ <- ImpGPU.kernelUses kernel ]
     builtinDecls =
       [WGSL.OverrideDecl builtinLockstepWidth (WGSL.Prim WGSL.Int32),
        WGSL.OverrideDecl builtinBlockSize (WGSL.Prim WGSL.Int32)]
